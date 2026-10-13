@@ -1591,6 +1591,7 @@ func imposeOrder(value any) error {
 		// explicitly skipped types
 	case *AuthCallout:
 	case JSTpmOpts:
+	case OpenTelemetryOpts:
 	default:
 		// this will fail during unit tests
 		return fmt.Errorf("OnReload, sort or explicitly skip type: %s",
@@ -1916,6 +1917,9 @@ func (s *Server) diffOptions(newOpts *Options) ([]option, error) {
 				return nil, fmt.Errorf("config reload not supported for %s: old=%v, new=%v",
 					field.Name, oldValue, newValue)
 			}
+		case "opentelemetry":
+			// Values are not printed since headers may hold credentials.
+			return nil, fmt.Errorf("config reload not supported for %s", field.Name)
 		case "mqtt":
 			diffOpts = append(diffOpts, &mqttAckWaitReload{newValue: newValue.(MQTTOpts).AckWait})
 			diffOpts = append(diffOpts, &mqttMaxAckPendingReload{newValue: newValue.(MQTTOpts).MaxAckPending})

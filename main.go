@@ -16,11 +16,14 @@ package main
 //go:generate go run server/errors_gen.go
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats-server/v2/telemetry"
 )
 
 var usageStr = `
@@ -126,10 +129,22 @@ func main() {
 	// Configure the logger based on the flags.
 	s.ConfigureLogger()
 
+	// Configure OpenTelemetry export, if enabled.
+	shutdownTelemetry, err := telemetry.Start(context.Background(), s, opts)
+	if err != nil {
+		server.PrintAndDie(fmt.Sprintf("%s: error configuring OpenTelemetry: %s", exe, err))
+	}
+
 	// Start things up. Block here until done.
 	if err := server.Run(s); err != nil {
 		server.PrintAndDie(err.Error())
 	}
 
 	s.WaitForShutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdownTelemetry(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: error shutting down OpenTelemetry: %s\n", exe, err)
+	}
 }

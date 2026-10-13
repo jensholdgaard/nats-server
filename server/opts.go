@@ -493,6 +493,7 @@ type Options struct {
 	JsAccDefaultDomain         map[string]string `json:"-"` // account to domain name mapping
 	Websocket                  WebsocketOpts     `json:"-"`
 	MQTT                       MQTTOpts          `json:"-"`
+	OpenTelemetry              OpenTelemetryOpts `json:"-"`
 	ProfPort                   int               `json:"-"`
 	ProfBlockRate              int               `json:"-"`
 	PidFile                    string            `json:"-"`
@@ -610,6 +611,31 @@ type Options struct {
 
 	// configDigest represents the state of configuration.
 	configDigest string
+}
+
+// OpenTelemetryOpts are options for exporting telemetry using the
+// OpenTelemetry protocol (OTLP). The standard `OTEL_*` environment variables
+// are honored as well, values set here take precedence.
+type OpenTelemetryOpts struct {
+	// Endpoint is the OTLP/HTTP base URL, e.g. "http://localhost:4318", to
+	// which the signal path (e.g. "/v1/metrics") is appended, the same way
+	// as for OTEL_EXPORTER_OTLP_ENDPOINT. The scheme determines whether TLS
+	// is used. If empty, the OTEL_EXPORTER_OTLP_* environment variables, or
+	// the OTLP default, are used.
+	Endpoint string
+	// Headers are sent with every export request, e.g. for authentication.
+	Headers map[string]string
+	// Metrics configures the export of the metric signal.
+	Metrics OpenTelemetryMetricsOpts
+}
+
+// OpenTelemetryMetricsOpts are options for the OTLP metric signal.
+type OpenTelemetryMetricsOpts struct {
+	// Enabled turns on the export of server metrics.
+	Enabled bool
+	// Interval between two exports. If zero, the value of
+	// OTEL_METRIC_EXPORT_INTERVAL, or the OpenTelemetry default, is used.
+	Interval time.Duration
 }
 
 // WebsocketOpts are options for websocket
@@ -1797,6 +1823,11 @@ func (o *Options) processConfigFileLine(k string, v any, errors *[]error, warnin
 		}
 	case "mqtt":
 		if err := parseMQTT(tk, o, errors, warnings); err != nil {
+			*errors = append(*errors, err)
+			return
+		}
+	case "opentelemetry", "otel":
+		if err := parseOpenTelemetry(tk, o, errors, warnings); err != nil {
 			*errors = append(*errors, err)
 			return
 		}
@@ -5562,6 +5593,77 @@ func parseStringArray(fieldName string, tk token, lt *token, mv any, errors *[]e
 		*errors = append(*errors, err)
 		return nil, err
 	}
+}
+
+func parseOpenTelemetry(v any, o *Options, errors *[]error, warnings *[]error) error {
+	var lt token
+	defer convertPanicToErrorList(&lt, errors)
+
+	tk, v := unwrapValue(v, &lt)
+	gm, ok := v.(map[string]any)
+	if !ok {
+		return &configErr{tk, fmt.Sprintf("Expected opentelemetry to be a map, got %T", v)}
+	}
+	for mk, mv := range gm {
+		tk, mv = unwrapValue(mv, &lt)
+		switch strings.ToLower(mk) {
+		case "endpoint":
+			ep := mv.(string)
+			if u, err := url.Parse(ep); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == _EMPTY_ {
+				*errors = append(*errors, &configErr{tk, fmt.Sprintf("invalid opentelemetry endpoint %q, expected an http(s) URL", ep)})
+				continue
+			}
+			o.OpenTelemetry.Endpoint = ep
+		case "headers":
+			hm, ok := mv.(map[string]any)
+			if !ok {
+				*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected opentelemetry headers to be a map, got %T", mv)})
+				continue
+			}
+			o.OpenTelemetry.Headers = make(map[string]string, len(hm))
+			for hk, hv := range hm {
+				_, hv = unwrapValue(hv, &lt)
+				o.OpenTelemetry.Headers[hk] = hv.(string)
+			}
+		case "metrics":
+			switch mv := mv.(type) {
+			case bool:
+				o.OpenTelemetry.Metrics.Enabled = mv
+			case map[string]any:
+				// The presence of the block enables metrics, unless disabled explicitly.
+				o.OpenTelemetry.Metrics.Enabled = true
+				for k, v := range mv {
+					tk, v := unwrapValue(v, &lt)
+					switch strings.ToLower(k) {
+					case "enabled":
+						o.OpenTelemetry.Metrics.Enabled = v.(bool)
+					case "interval":
+						o.OpenTelemetry.Metrics.Interval = parseDuration("opentelemetry metrics interval", tk, v, errors, warnings)
+						if o.OpenTelemetry.Metrics.Interval < 0 {
+							*errors = append(*errors, &configErr{tk, "opentelemetry metrics interval can not be negative"})
+						}
+					default:
+						if !tk.IsUsedVariable() {
+							*errors = append(*errors, &unknownConfigFieldErr{
+								field:     k,
+								configErr: configErr{token: tk},
+							})
+						}
+					}
+				}
+			default:
+				*errors = append(*errors, &configErr{tk, fmt.Sprintf("Expected opentelemetry metrics to be a boolean or a map, got %T", mv)})
+			}
+		default:
+			if !tk.IsUsedVariable() {
+				*errors = append(*errors, &unknownConfigFieldErr{
+					field:     mk,
+					configErr: configErr{token: tk},
+				})
+			}
+		}
+	}
+	return nil
 }
 
 func parseWebsocket(v any, o *Options, errors *[]error, warnings *[]error) error {

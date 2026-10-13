@@ -256,6 +256,9 @@ type Server struct {
 	cproto     int64     // number of clients supporting async INFO
 	configTime time.Time // last time config was loaded
 
+	// OpenTelemetry metrics instrumentation, see SetMeterProvider.
+	otelMetrics otelMetrics
+
 	logging struct {
 		sync.RWMutex
 		logger      Logger
@@ -2761,6 +2764,9 @@ func (s *Server) Shutdown() {
 	if opts.PortsFileDir != _EMPTY_ {
 		s.deletePortsFile(opts.PortsFileDir)
 	}
+
+	// Export the final values before the instruments go away.
+	s.shutdownOTelMetrics()
 
 	s.Noticef("Server Exiting..")
 
